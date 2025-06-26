@@ -3,7 +3,15 @@
 # 代理服务器配置脚本
 # 使用Privoxy作为HTTP代理，转发到日本VPS的SOCKS5代理
 
-set -e
+# 移除 set -e 以避免脚本在遇到错误时立即退出
+# set -e
+
+# 定义错误处理函数
+handle_error() {
+    echo "⚠ 警告: $1"
+    echo "继续执行下一步..."
+    return 0
+}
 
 # 配置变量 - 请根据实际情况修改
 JAPAN_VPS_IP="156.231.117.240"          # 日本VPS的IP地址
@@ -22,8 +30,62 @@ fi
 
 # 1. 安装必要软件
 echo "1. 安装必要软件..."
-sudo apt update
-sudo apt install -y privoxy curl wget openssh-client
+
+# 先修复可能的包依赖问题
+echo "修复包依赖问题..."
+sudo dpkg --configure -a 2>/dev/null || true
+sudo apt-get -f install -y 2>/dev/null || true
+
+# 更新包列表，如果失败也继续
+echo "更新包列表..."
+sudo apt update || {
+    echo "警告: 包列表更新失败，但继续运行..."
+}
+
+# 定义必要的包列表
+ESSENTIAL_PACKAGES=(
+    "privoxy"
+    "curl" 
+    "wget"
+    "openssh-client"
+)
+
+# 逐个安装必要包，失败时继续
+echo "安装核心包..."
+for package in "${ESSENTIAL_PACKAGES[@]}"; do
+    echo "正在安装 $package..."
+    if sudo apt install -y "$package" 2>/dev/null; then
+        echo "✓ $package 安装成功"
+    else
+        echo "⚠ $package 安装失败，尝试强制安装..."
+        sudo apt install -y --fix-broken "$package" 2>/dev/null || {
+            echo "✗ $package 安装失败，但继续运行..."
+        }
+    fi
+done
+
+# 检查关键包是否安装成功
+echo "检查关键包安装状态..."
+CRITICAL_PACKAGES=("privoxy" "curl")
+for package in "${CRITICAL_PACKAGES[@]}"; do
+    if dpkg -l | grep -q "^ii  $package "; then
+        echo "✓ $package 已安装"
+    else
+        echo "⚠ 尝试使用snap或其他方式安装 $package..."
+        case $package in
+            "curl")
+                # curl通常系统自带或可以通过其他方式安装
+                if ! command -v curl >/dev/null 2>&1; then
+                    echo "错误: curl是必需的，请手动安装"
+                fi
+                ;;
+            "privoxy")
+                echo "错误: privoxy是关键组件，尝试手动安装："
+                echo "sudo apt update && sudo apt install -y privoxy"
+                ;;
+        esac
+    fi
+done
 
 # 2. 备份原始配置
 echo "2. 备份原始配置..."
@@ -99,20 +161,37 @@ sudo chmod 640 /etc/privoxy/user.action
 
 # 6. 启动并启用Privoxy服务
 echo "6. 启动Privoxy服务..."
-sudo systemctl enable privoxy
-sudo systemctl restart privoxy
 
-# 等待服务启动
-sleep 3
-
-# 7. 检查服务状态
-echo "7. 检查Privoxy服务状态..."
-if sudo systemctl is-active --quiet privoxy; then
-    echo "✓ Privoxy服务运行正常"
+# 检查privoxy是否已安装
+if ! command -v privoxy >/dev/null 2>&1 && ! dpkg -l | grep -q "^ii  privoxy "; then
+    handle_error "Privoxy未安装，跳过服务配置"
 else
-    echo "✗ Privoxy服务启动失败"
-    sudo systemctl status privoxy
-    exit 1
+    # 启用服务
+    if sudo systemctl enable privoxy 2>/dev/null; then
+        echo "✓ Privoxy服务已启用"
+    else
+        handle_error "Privoxy服务启用失败"
+    fi
+
+    # 重启服务
+    if sudo systemctl restart privoxy 2>/dev/null; then
+        echo "✓ Privoxy服务已重启"
+    else
+        handle_error "Privoxy服务重启失败，尝试启动..."
+        sudo systemctl start privoxy 2>/dev/null || handle_error "Privoxy服务启动失败"
+    fi
+
+    # 等待服务启动
+    sleep 3
+
+    # 7. 检查服务状态
+    echo "7. 检查Privoxy服务状态..."
+    if sudo systemctl is-active --quiet privoxy 2>/dev/null; then
+        echo "✓ Privoxy服务运行正常"
+    else
+        handle_error "Privoxy服务未正常运行，但继续配置其他组件"
+        echo "可以稍后手动启动: sudo systemctl start privoxy"
+    fi
 fi
 
 # 8. 创建SSH隧道管理脚本
