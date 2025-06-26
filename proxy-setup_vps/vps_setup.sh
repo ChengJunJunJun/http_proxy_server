@@ -53,7 +53,10 @@ sudo ufw default deny incoming
 sudo ufw default allow outgoing
 
 # 允许SSH端口
-SSH_PORT=$(grep -E "^Port " /etc/ssh/sshd_config | awk '{print $2}' || echo "22")
+SSH_PORT=$(grep -E "^#?Port " /etc/ssh/sshd_config | awk '{print $2}' | tail -1)
+if [ -z "$SSH_PORT" ]; then
+    SSH_PORT="22"
+fi
 sudo ufw allow $SSH_PORT/tcp comment 'SSH'
 
 # 允许SOCKS5代理端口（只允许本地连接）
